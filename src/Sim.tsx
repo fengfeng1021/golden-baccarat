@@ -1,8 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 
-// --- [核心邏輯區] ---
-
-// 1. 基礎卡牌與洗牌
+// --- 核心邏輯區 ---
 const createShoe = () => {
     const deck = Array.from({length: 416}, (_, i) => {
         const rank = (i % 13) + 1;
@@ -16,7 +14,6 @@ const createShoe = () => {
     return deck;
 };
 
-// 2. 百家樂補牌規則
 const getPoint = (cards: {v: number}[]) => cards.reduce((a, c) => a + c.v, 0) % 10;
 
 const runHand = (shoe: {r: number, v: number}[]) => {
@@ -68,76 +65,87 @@ const runHand = (shoe: {r: number, v: number}[]) => {
     return { w: win, pp: pairP, bp: pairB };
 };
 
-// --- 圖表組件 ---
-const Chart = ({ data }: { data: number[] }) => {
+// --- 圖表組件 (更新座標軸) ---
+const Chart = ({ data, initialBal }: { data: number[], initialBal: number }) => {
     if (data.length === 0) {
         return (
             <div className="w-full h-full flex flex-col items-center justify-center border border-white/10 rounded-xl bg-[#111] min-h-[300px]">
-                <span className="text-6xl mb-4">📈</span>
+                <span className="text-6xl mb-4 grayscale opacity-50">📈</span>
                 <span className="text-gray-500 font-bold text-lg">等待模擬數據...</span>
             </div>
         );
     }
     
-    const max = Math.max(...data);
-    const min = Math.min(...data);
+    // 計算範圍：必須包含 0 (破產線) 和 initialBal (起始線) 和 data中的最大最小值
+    const allValues = [...data, 0, initialBal];
+    const max = Math.max(...allValues);
+    const min = Math.min(...allValues);
+    
     const padding = (max - min) * 0.1 || 100;
     const yMax = max + padding;
     const yMin = min - padding;
     const range = yMax - yMin || 1;
     
+    // 座標轉換函數
+    const getY = (val: number) => 100 - ((val - yMin) / range) * 100;
+
     const getPoints = () => {
         const step = Math.max(1, Math.floor(data.length / 500));
         let path = "";
         for (let i = 0; i < data.length; i += step) {
             const x = (i / (data.length - 1)) * 100;
-            const y = 100 - ((data[i] - yMin) / range) * 100;
+            const y = getY(data[i]);
             path += `${x},${y} `;
         }
         if ((data.length - 1) % step !== 0) {
             const x = 100;
-            const y = 100 - ((data[data.length-1] - yMin) / range) * 100;
+            const y = getY(data[data.length-1]);
             path += `${x},${y} `;
         }
         return path;
     };
 
-    const isWin = data[data.length - 1] >= data[0];
+    const isWin = data[data.length - 1] >= initialBal;
     const lineColor = isWin ? '#4ade80' : '#f87171';
     const areaColor = isWin ? 'rgba(74, 222, 128, 0.1)' : 'rgba(248, 113, 113, 0.1)';
 
     return (
-        <div className="relative w-full h-[300px] lg:h-full bg-[#111] rounded-xl border border-white/10 p-2 flex flex-col shrink-0">
-            <div className="flex justify-between items-center mb-2 px-2">
+        <div className="relative w-full h-full bg-[#111] rounded-xl border border-white/10 p-2 flex flex-col shrink-0 min-h-0">
+            <div className="flex justify-between items-center mb-1 px-2 shrink-0">
                 <span className="text-sm text-gray-400 font-bold tracking-wider">資金走勢圖</span>
-                <span className={`text-lg font-mono font-bold ${isWin ? 'text-green-400' : 'text-red-400'}`}>
-                    ${data[data.length-1].toLocaleString()}
-                </span>
+                <div className="flex gap-4 text-xs font-mono font-bold">
+                    <span className="text-gray-500">初始: ${initialBal.toLocaleString()}</span>
+                    <span className={`${isWin ? 'text-green-400' : 'text-red-400'}`}>
+                        最終: ${data[data.length-1].toLocaleString()}
+                    </span>
+                </div>
             </div>
             
             <div className="relative flex-1 w-full min-h-0 mb-6 ml-2">
-                <div className="absolute top-0 left-0 h-full flex flex-col justify-between text-xs font-bold text-gray-400 font-mono pointer-events-none z-10 pr-2">
+                {/* Y軸標籤 */}
+                <div className="absolute top-0 left-0 h-full flex flex-col justify-between text-[10px] font-bold text-gray-500 font-mono pointer-events-none z-10 pr-2">
                     <span>{Math.round(yMax).toLocaleString()}</span>
-                    <span>{Math.round((yMax+yMin)/2).toLocaleString()}</span>
                     <span>{Math.round(yMin).toLocaleString()}</span>
                 </div>
 
-                <div className="absolute inset-0 left-12 right-4 bottom-2 top-2">
+                <div className="absolute inset-0 left-10 right-4 bottom-2 top-2">
                     <svg viewBox="0 0 100 100" className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                        <defs>
-                            <linearGradient id="grid-grad" x1="0" x2="0" y1="0" y2="1">
-                                <stop offset="0%" stopColor="#333" stopOpacity="0.5"/>
-                                <stop offset="100%" stopColor="#333" stopOpacity="0.1"/>
-                            </linearGradient>
-                        </defs>
+                        {/* 網格 */}
                         <line x1="0" y1="0" x2="100" y2="0" stroke="#333" strokeWidth="0.5" strokeDasharray="2" vectorEffect="non-scaling-stroke"/>
-                        <line x1="0" y1="50" x2="100" y2="50" stroke="#333" strokeWidth="0.5" strokeDasharray="2" vectorEffect="non-scaling-stroke"/>
                         <line x1="0" y1="100" x2="100" y2="100" stroke="#333" strokeWidth="0.5" strokeDasharray="2" vectorEffect="non-scaling-stroke"/>
                         
+                        {/* 0 線 (破產線) - 紅色 */}
                         <line 
-                            x1="0" y1={100 - ((data[0] - yMin) / range) * 100} 
-                            x2="100" y2={100 - ((data[0] - yMin) / range) * 100} 
-                            stroke="#666" strokeWidth="1" strokeDasharray="4" vectorEffect="non-scaling-stroke" 
+                            x1="0" y1={getY(0)} x2="100" y2={getY(0)} 
+                            stroke="#ef4444" strokeWidth="1" strokeDasharray="0" opacity="0.6" vectorEffect="non-scaling-stroke" 
+                        />
+                        {/* 0 線標籤 (SVG text) */}
+                        <text x="102" y={getY(0)} dy="3" fill="#ef4444" fontSize="3" fontWeight="bold" opacity="0.8">0</text>
+
+                        {/* 初始資金線 - 灰色虛線 */}
+                        <line 
+                            x1="0" y1={getY(initialBal)} x2="100" y2={getY(initialBal)} 
+                            stroke="#888" strokeWidth="1" strokeDasharray="4" opacity="0.5" vectorEffect="non-scaling-stroke" 
                         />
 
                         <polyline
@@ -149,18 +157,18 @@ const Chart = ({ data }: { data: number[] }) => {
                             strokeLinecap="round"
                             strokeLinejoin="round"
                         />
-                        
                         <polygon
                             fill={areaColor}
-                            points={`0,100 ${getPoints()} 100,100`}
+                            points={`0,${getY(yMin)} ${getPoints()} 100,${getY(yMin)}`}
                             vectorEffect="non-scaling-stroke"
                         />
                     </svg>
                     
-                    <div className="absolute -bottom-6 left-0 w-full flex justify-between text-xs font-bold text-gray-400 font-mono">
-                        <span>0</span>
-                        <span>{Math.floor(data.length / 2)}</span>
-                        <span>{data.length}局</span>
+                    {/* X軸標籤 */}
+                    <div className="absolute -bottom-5 left-0 w-full flex justify-between text-[10px] font-bold text-gray-500 font-mono">
+                        <span>Start</span>
+                        <span>{Math.floor(data.length / 2)}局</span>
+                        <span>End</span>
                     </div>
                 </div>
             </div>
@@ -168,7 +176,7 @@ const Chart = ({ data }: { data: number[] }) => {
     );
 };
 
-// --- UI Components ---
+// --- UI 組件 ---
 const CustomSelect = ({ value, onChange, options, disabled = false }: { value: string, onChange: (v: string) => void, options: {l: string, v: string}[], disabled?: boolean }) => {
     const [open, setOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -253,9 +261,7 @@ const StatCard = ({ label, val, sub, color = "text-white" }: { label: string, va
 
 // --- 主組件 ---
 export const Sim = ({ onClose }: { onClose: () => void }) => {
-    // 狀態
     const [strategy, setStrategy] = useState('martingale');
-    // [新增] 投注目標 (P:閒, B:莊)
     const [target, setTarget] = useState('P');
     const [shoes, setShoes] = useState(50);
     const [bal, setBal] = useState(10000);
@@ -264,16 +270,13 @@ export const Sim = ({ onClose }: { onClose: () => void }) => {
     const [stats, setStats] = useState<any>(null);
     const [running, setRunning] = useState(false);
 
-    // 判斷是否為動態策略 (未來可擴充更多策略到此列表)
-    // 目前這四個都是注碼策略，非選路策略，所以都回傳 false
     const isDynamicStrategy = ['dynamic_example'].includes(strategy);
 
-    // 如果是動態策略，自動鎖定 Target (或者設為 null)
     useEffect(() => {
         if (isDynamicStrategy) {
             setTarget('AUTO'); 
         } else if (target === 'AUTO') {
-            setTarget('P'); // 切回普通策略時重置
+            setTarget('P');
         }
     }, [strategy]);
 
@@ -309,23 +312,15 @@ export const Sim = ({ onClose }: { onClose: () => void }) => {
                     if (res.bp) bpCnt++;
                     if (res.pp) ppCnt++;
 
-                    // 投注邏輯
                     if (res.w !== 'T') {
-                        // 判斷是否贏：
-                        // 1. 如果是動態策略 (AUTO)，這裡需要複雜邏輯 (暫時沒有)
-                        // 2. 如果是固定策略，檢查 target 是否等於 res.w
                         const won = target === 'AUTO' ? false : target === res.w;
                         
                         if (won) {
-                            // 計算盈利：如果是莊贏 (B)，且不是免傭，通常抽水 5% -> 賠率 0.95
-                            // 閒贏 (P) -> 賠率 1
                             const payout = (target === 'B') ? 0.95 : 1;
                             const profit = currentBet * payout;
-
                             currentBal += profit;
                             winCnt++;
                             
-                            // 贏的注碼調整
                             if (strategy === 'martingale') {
                                 currentBet = baseBet;
                             } else if (strategy === 'paroli') {
@@ -334,8 +329,6 @@ export const Sim = ({ onClose }: { onClose: () => void }) => {
                                     currentBet = baseBet;
                                     paroliStep = 0;
                                 } else {
-                                    // 帕羅利贏了倍投 (包含本金+盈利) 
-                                    // 這裡簡單模擬：下一注 = 當前注 * 2 (略去抽水造成的零頭複雜度)
                                     currentBet *= 2; 
                                 }
                             } else if (strategy === 'fibonacci') {
@@ -346,7 +339,6 @@ export const Sim = ({ onClose }: { onClose: () => void }) => {
                             currentBal -= currentBet;
                             loseCnt++;
 
-                            // 輸的注碼調整
                             if (strategy === 'martingale') {
                                 currentBet *= 2;
                             } else if (strategy === 'paroli') {
@@ -396,101 +388,102 @@ export const Sim = ({ onClose }: { onClose: () => void }) => {
     const targets = [
         {l: '投注閒家 (P)', v: 'P'},
         {l: '投注莊家 (B)', v: 'B'},
-        {l: '自動判斷 (鎖定)', v: 'AUTO'}, // 用於顯示動態策略時的狀態
+        {l: '自動判斷 (鎖定)', v: 'AUTO'},
     ];
 
     return (
-        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-xl animate-in fade-in duration-300 overflow-y-auto lg:overflow-hidden">
-            <div className="min-h-full w-full flex flex-col lg:h-screen lg:p-6 p-0">
-                <div className="w-full max-w-[1600px] mx-auto bg-[#0a0a0a] border-x border-b lg:border border-[#333] lg:rounded-2xl shadow-2xl flex flex-col flex-1">
-                    
-                    <div className="flex justify-between items-center px-4 md:px-6 py-4 border-b border-white/10 bg-[#111] shrink-0 sticky top-0 z-50 lg:static">
-                        <div className="flex items-center gap-3">
-                            <div className="w-1.5 h-6 bg-[#FFD700] rounded-full shadow-[0_0_15px_#FFD700]"></div>
-                            <h2 className="text-xl md:text-2xl font-black text-white tracking-widest">策略模擬器</h2>
-                        </div>
-                        <button onClick={onClose} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-500/20 text-gray-400 hover:text-red-400 flex items-center justify-center transition-all text-2xl">✕</button>
+        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-xl animate-in fade-in duration-300 overflow-hidden flex flex-col">
+            {/* 主容器：限制最大寬高，滿屏 */}
+            <div className="w-full max-w-[1600px] mx-auto bg-[#0a0a0a] border-x border-b lg:border border-[#333] lg:rounded-2xl shadow-2xl flex flex-col flex-1 h-full max-h-screen overflow-hidden">
+                
+                {/* Header */}
+                <div className="flex justify-between items-center px-4 md:px-6 py-4 border-b border-white/10 bg-[#111] shrink-0">
+                    <div className="flex items-center gap-3">
+                        <div className="w-1.5 h-6 bg-[#FFD700] rounded-full shadow-[0_0_15px_#FFD700]"></div>
+                        <h2 className="text-xl md:text-2xl font-black text-white tracking-widest">策略模擬器</h2>
                     </div>
+                    <button onClick={onClose} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-500/20 text-gray-400 hover:text-red-400 flex items-center justify-center transition-all text-2xl">✕</button>
+                </div>
 
-                    <div className="p-4 md:p-6 border-b border-white/10 bg-[#0f0f0f] shrink-0">
-                        {/* 這裡調整為 6 列 Grid 以容納新選項 */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 md:gap-6 items-end">
-                            <div className="flex flex-col gap-1 w-full lg:col-span-1">
-                                <label className="text-sm text-gray-300 font-bold tracking-wide ml-1">使用策略</label>
-                                <CustomSelect value={strategy} onChange={setStrategy} options={strategies} />
-                            </div>
-                            
-                            {/* [新增] 投注目標選擇 */}
-                            <div className="flex flex-col gap-1 w-full lg:col-span-1">
-                                <label className="text-sm text-gray-300 font-bold tracking-wide ml-1">
-                                    {isDynamicStrategy ? '投注目標 (自動)' : '固定投注目標'}
-                                </label>
-                                <CustomSelect 
-                                    value={target} 
-                                    onChange={setTarget} 
-                                    options={targets} 
-                                    disabled={isDynamicStrategy} // 動態策略時鎖定
-                                />
-                            </div>
-
-                            <NumberInput label="模擬牌靴數" value={shoes} onChange={setShoes} step={10} min={1} />
-                            <NumberInput label="初始金額" value={bal} onChange={setBal} step={1000} min={100} />
-                            <NumberInput label="單注金額" value={baseBet} onChange={setBaseBet} step={100} min={10} />
-                            
-                            <button 
-                                onClick={runSim}
-                                disabled={running}
-                                className={`w-full h-10 md:h-12 bg-gradient-to-r from-[#FFD700] to-[#FFC000] hover:to-[#FFD700] text-black font-black text-lg rounded-lg shadow-[0_0_20px_rgba(255,215,0,0.4)] transition-all active:scale-95 transform mt-4 lg:mt-0 ${running ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            >
-                                {running ? '計算中...' : '開始模擬'}
-                            </button>
+                {/* Controls */}
+                <div className="p-4 md:p-6 border-b border-white/10 bg-[#0f0f0f] shrink-0">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 md:gap-6 items-end">
+                        <div className="flex flex-col gap-1 w-full lg:col-span-1">
+                            <label className="text-sm text-gray-300 font-bold tracking-wide ml-1">使用策略</label>
+                            <CustomSelect value={strategy} onChange={setStrategy} options={strategies} />
                         </div>
-                    </div>
-
-                    <div className="flex-1 flex flex-col lg:flex-row min-h-0 bg-[#050505] p-4 gap-4 overflow-y-auto lg:overflow-hidden pb-10 lg:pb-4">
+                        <div className="flex flex-col gap-1 w-full lg:col-span-1">
+                            <label className="text-sm text-gray-300 font-bold tracking-wide ml-1">
+                                {isDynamicStrategy ? '投注目標 (自動)' : '固定投注目標'}
+                            </label>
+                            <CustomSelect 
+                                value={target} 
+                                onChange={setTarget} 
+                                options={targets} 
+                                disabled={isDynamicStrategy} 
+                            />
+                        </div>
+                        <NumberInput label="模擬牌靴數" value={shoes} onChange={setShoes} step={10} min={1} />
+                        <NumberInput label="初始金額" value={bal} onChange={setBal} step={1000} min={100} />
+                        <NumberInput label="單注金額" value={baseBet} onChange={setBaseBet} step={100} min={10} />
                         
-                        <div className="flex-1 flex flex-col min-h-[350px] lg:h-full">
-                             <Chart data={chartData} />
-                        </div>
+                        <button 
+                            onClick={runSim}
+                            disabled={running}
+                            className={`w-full h-10 md:h-12 bg-gradient-to-r from-[#FFD700] to-[#FFC000] hover:to-[#FFD700] text-black font-black text-lg rounded-lg shadow-[0_0_20px_rgba(255,215,0,0.4)] transition-all active:scale-95 transform mt-4 lg:mt-0 ${running ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                            {running ? '計算中...' : '開始模擬'}
+                        </button>
+                    </div>
+                </div>
 
-                        <div className="w-full lg:w-[420px] bg-[#0c0c0c] border border-white/10 rounded-xl p-4 shrink-0 flex flex-col gap-4">
-                            {stats ? (
-                                <>
-                                    <div className="grid grid-cols-2 gap-3 shrink-0">
-                                        <div className="bg-white/5 p-4 rounded-xl border border-white/10">
-                                            <div className="text-gray-400 text-sm font-bold mb-1">最終金額</div>
-                                            <div className="text-[#FFD700] font-mono text-3xl font-black tracking-tight">
-                                                ${stats.endBal.toLocaleString()}
-                                            </div>
-                                        </div>
-                                        <div className="bg-white/5 p-4 rounded-xl border border-white/10">
-                                            <div className="text-gray-400 text-sm font-bold mb-1">純收益/虧損</div>
-                                            <div className={`font-mono text-3xl font-black tracking-tight ${stats.net >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                                {stats.net >= 0 ? '+' : ''}{stats.net.toLocaleString()}
-                                            </div>
+                {/* Content - 使用 min-h-0 確保 Flexbox 正確處理溢出，避免被切掉 */}
+                <div className="flex-1 flex flex-col lg:flex-row min-h-0 bg-[#050505] p-4 gap-4 overflow-hidden">
+                    
+                    {/* Left: Chart - 佔用剩餘空間，確保高度自適應 */}
+                    <div className="flex-1 flex flex-col min-h-0 h-[40vh] lg:h-auto shrink-0">
+                         {/* 傳入初始金額以繪製起始線 */}
+                         <Chart data={chartData} initialBal={bal} />
+                    </div>
+
+                    {/* Right: Stats - 右側面板，內容過多時內部滾動 */}
+                    <div className="w-full lg:w-[420px] bg-[#0c0c0c] border border-white/10 rounded-xl p-4 shrink-0 flex flex-col gap-4 overflow-hidden h-full">
+                        {stats ? (
+                            <>
+                                <div className="grid grid-cols-2 gap-3 shrink-0">
+                                    <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                        <div className="text-gray-400 text-sm font-bold mb-1">最終金額</div>
+                                        <div className="text-[#FFD700] font-mono text-3xl font-black tracking-tight truncate">
+                                            ${stats.endBal.toLocaleString()}
                                         </div>
                                     </div>
-
-                                    <div className="grid grid-cols-2 gap-3 overflow-y-auto custom-scrollbar pr-1 pb-1">
-                                        <div className="col-span-2">
-                                            <StatCard label="模擬總局數" val={stats.total} />
+                                    <div className="bg-white/5 p-4 rounded-xl border border-white/10">
+                                        <div className="text-gray-400 text-sm font-bold mb-1">純收益/虧損</div>
+                                        <div className={`font-mono text-3xl font-black tracking-tight truncate ${stats.net >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                            {stats.net >= 0 ? '+' : ''}{stats.net.toLocaleString()}
                                         </div>
-                                        <StatCard label="莊贏" val={stats.b.c} sub={stats.b.p} color="text-red-500" />
-                                        <StatCard label="閒贏" val={stats.p.c} sub={stats.p.p} color="text-blue-500" />
-                                        <StatCard label="和局" val={stats.t.c} sub={stats.t.p} color="text-green-500" />
-                                        <StatCard label="莊對" val={stats.bp.c} sub={stats.bp.p} color="text-red-400" />
-                                        <StatCard label="閒對" val={stats.pp.c} sub={stats.pp.p} color="text-blue-400" />
-                                        <StatCard label="獲勝局數" val={stats.win.c} sub={stats.win.p} color="text-green-400" />
-                                        <StatCard label="虧損局數" val={stats.lose.c} sub={stats.lose.p} color="text-red-400" />
                                     </div>
-                                </>
-                            ) : (
-                                <div className="h-full flex flex-col items-center justify-center text-gray-600 gap-4 opacity-50 min-h-[300px]">
-                                    <div className="text-6xl">📊</div>
-                                    <div className="text-xl font-bold">請點擊開始模擬</div>
                                 </div>
-                            )}
-                        </div>
+
+                                <div className="grid grid-cols-2 gap-3 overflow-y-auto custom-scrollbar pr-1 pb-2 min-h-0">
+                                    <div className="col-span-2">
+                                        <StatCard label="模擬總局數" val={stats.total} />
+                                    </div>
+                                    <StatCard label="莊贏" val={stats.b.c} sub={stats.b.p} color="text-red-500" />
+                                    <StatCard label="閒贏" val={stats.p.c} sub={stats.p.p} color="text-blue-500" />
+                                    <StatCard label="和局" val={stats.t.c} sub={stats.t.p} color="text-green-500" />
+                                    <StatCard label="莊對" val={stats.bp.c} sub={stats.bp.p} color="text-red-400" />
+                                    <StatCard label="閒對" val={stats.pp.c} sub={stats.pp.p} color="text-blue-400" />
+                                    <StatCard label="獲勝局數" val={stats.win.c} sub={stats.win.p} color="text-green-400" />
+                                    <StatCard label="虧損局數" val={stats.lose.c} sub={stats.lose.p} color="text-red-400" />
+                                </div>
+                            </>
+                        ) : (
+                            <div className="h-full flex flex-col items-center justify-center text-gray-600 gap-4 opacity-50 min-h-[300px]">
+                                <div className="text-6xl">📊</div>
+                                <div className="text-xl font-bold">請點擊開始模擬</div>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>
