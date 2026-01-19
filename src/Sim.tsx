@@ -1,183 +1,162 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { runSimulation, type StrategyConfig, type BetTarget } from './Strategy';
 
-// --- 核心邏輯區 ---
-const createShoe = () => {
-    const deck = Array.from({length: 416}, (_, i) => {
-        const rank = (i % 13) + 1;
-        const value = rank >= 10 ? 0 : rank;
-        return { r: rank, v: value };
-    });
-    for (let i = deck.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [deck[i], deck[j]] = [deck[j], deck[i]];
-    }
-    return deck;
-};
-
-const getPoint = (cards: {v: number}[]) => cards.reduce((a, c) => a + c.v, 0) % 10;
-
-const runHand = (shoe: {r: number, v: number}[]) => {
-    if (shoe.length < 6) return null;
-
-    const p1 = shoe.pop()!;
-    const b1 = shoe.pop()!;
-    const p2 = shoe.pop()!;
-    const b2 = shoe.pop()!;
-    
-    const pHand = [p1, p2];
-    const bHand = [b1, b2];
-
-    let pv = getPoint(pHand);
-    let bv = getPoint(bHand);
-    
-    if (pv < 8 && bv < 8) {
-        let p3v = -1;
-        if (pv <= 5) {
-            const p3 = shoe.pop()!;
-            pHand.push(p3);
-            pv = getPoint(pHand);
-            p3v = p3.v;
-        }
-
-        let bDraw = false;
-        if (bv <= 2) bDraw = true;
-        else if (bv === 3) bDraw = p3v !== 8;
-        else if (bv === 4) bDraw = p3v !== 0 && p3v !== 1 && p3v !== 8 && p3v !== 9;
-        else if (bv === 5) bDraw = p3v === -1 ? false : (p3v >= 4 && p3v <= 7);
-        else if (bv === 6) bDraw = p3v === 6 || p3v === 7;
-        
-        if (p3v === -1) {
-            if (bv <= 5) bDraw = true;
-            else bDraw = false;
-        }
-
-        if (bDraw) {
-            const b3 = shoe.pop()!;
-            bHand.push(b3);
-            bv = getPoint(bHand);
-        }
-    }
-
-    const win = pv > bv ? 'P' : bv > pv ? 'B' : 'T';
-    const pairP = p1.r === p2.r;
-    const pairB = b1.r === b2.r;
-
-    return { w: win, pp: pairP, bp: pairB };
-};
-
-// --- 圖表組件 (更新座標軸) ---
+// --- 全新重寫的圖表組件 ---
 const Chart = ({ data, initialBal }: { data: number[], initialBal: number }) => {
     if (data.length === 0) {
         return (
-            <div className="w-full h-full flex flex-col items-center justify-center border border-white/10 rounded-xl bg-[#111] min-h-[300px]">
-                <span className="text-6xl mb-4 grayscale opacity-50">📈</span>
-                <span className="text-gray-500 font-bold text-lg">等待模擬數據...</span>
+            <div className="w-full h-full flex flex-col items-center justify-center border border-white/10 rounded-xl bg-[#111] min-h-[200px]">
+                <span className="text-4xl mb-2 grayscale opacity-50">📈</span>
+                <span className="text-[#FFD700] font-bold text-sm">等待模擬數據...</span>
             </div>
         );
     }
     
-    // 計算範圍：必須包含 0 (破產線) 和 initialBal (起始線) 和 data中的最大最小值
+    // 1. 計算數值範圍 (必須包含 0 與 初始本金)
     const allValues = [...data, 0, initialBal];
-    const max = Math.max(...allValues);
-    const min = Math.min(...allValues);
+    const maxVal = Math.max(...allValues);
+    const minVal = Math.min(...allValues);
     
-    const padding = (max - min) * 0.1 || 100;
-    const yMax = max + padding;
-    const yMin = min - padding;
+    // 上下留 5% 緩衝，避免線條貼邊
+    const padding = (maxVal - minVal) * 0.05 || 100;
+    const yMax = maxVal + padding;
+    const yMin = minVal - padding;
     const range = yMax - yMin || 1;
-    
-    // 座標轉換函數
-    const getY = (val: number) => 100 - ((val - yMin) / range) * 100;
 
-    const getPoints = () => {
-        const step = Math.max(1, Math.floor(data.length / 500));
-        let path = "";
-        for (let i = 0; i < data.length; i += step) {
+    // 2. 座標轉換函數 (數值 -> 0~100 SVG 座標)
+    const getSvgY = (val: number) => 100 - ((val - yMin) / range) * 100;
+
+    // 3. 生成路徑點 (降採樣優化，確保首尾精準)
+    const points = useMemo(() => {
+        const step = Math.max(1, Math.floor(data.length / 400)); // 限制點數以提升效能
+        let p = "";
+        // 起點
+        p += `0,${getSvgY(data[0])} `;
+        
+        // 中間點
+        for (let i = step; i < data.length - 1; i += step) {
             const x = (i / (data.length - 1)) * 100;
-            const y = getY(data[i]);
-            path += `${x},${y} `;
+            const y = getSvgY(data[i]);
+            p += `${x},${y} `;
         }
-        if ((data.length - 1) % step !== 0) {
-            const x = 100;
-            const y = getY(data[data.length-1]);
-            path += `${x},${y} `;
-        }
-        return path;
-    };
+        
+        // 終點 (強制 X=100)
+        p += `100,${getSvgY(data[data.length-1])}`;
+        return p;
+    }, [data, yMin, range]);
 
     const isWin = data[data.length - 1] >= initialBal;
-    const lineColor = isWin ? '#4ade80' : '#f87171';
-    const areaColor = isWin ? 'rgba(74, 222, 128, 0.1)' : 'rgba(248, 113, 113, 0.1)';
+    const lineColor = isWin ? '#4ade80' : '#f87171'; // 綠贏紅輸
+
+    // 4. 生成 Y 軸刻度 (10等分 -> 11個刻度)
+    const yTicks = Array.from({length: 11}, (_, i) => {
+        const val = yMin + (range * (i / 10));
+        return {
+            yPct: 100 - (i * 10), // CSS top position %
+            val: Math.round(val),
+            isZero: Math.abs(val) < range * 0.02, // 判斷是否接近 0 (用於高亮)
+        };
+    }).reverse(); // 讓最大值在上面
+
+    // 5. 生成 X 軸刻度 (10等分)
+    const xTicks = Array.from({length: 11}, (_, i) => i * 10);
 
     return (
-        <div className="relative w-full h-full bg-[#111] rounded-xl border border-white/10 p-2 flex flex-col shrink-0 min-h-0">
-            <div className="flex justify-between items-center mb-1 px-2 shrink-0">
-                <span className="text-sm text-gray-400 font-bold tracking-wider">資金走勢圖</span>
-                <div className="flex gap-4 text-xs font-mono font-bold">
-                    <span className="text-gray-500">初始: ${initialBal.toLocaleString()}</span>
-                    <span className={`${isWin ? 'text-green-400' : 'text-red-400'}`}>
+        <div className="w-full h-full bg-[#111] rounded-xl border border-white/10 p-3 flex flex-col min-h-[300px]">
+            {/* 標題與當前狀態 */}
+            <div className="flex justify-between items-center mb-2 px-1 shrink-0">
+                <span className="text-sm text-[#FFD700] font-black tracking-widest">資金走勢圖</span>
+                <div className="flex gap-4 text-xs font-mono font-bold bg-black/40 px-3 py-1 rounded border border-white/10">
+                    <span className="text-gray-400">初始: <span className="text-white">${initialBal.toLocaleString()}</span></span>
+                    <span className={isWin ? 'text-green-400' : 'text-red-400'}>
                         最終: ${data[data.length-1].toLocaleString()}
                     </span>
                 </div>
             </div>
             
-            <div className="relative flex-1 w-full min-h-0 mb-6 ml-2">
-                {/* Y軸標籤 */}
-                <div className="absolute top-0 left-0 h-full flex flex-col justify-between text-[10px] font-bold text-gray-500 font-mono pointer-events-none z-10 pr-2">
-                    <span>{Math.round(yMax).toLocaleString()}</span>
-                    <span>{Math.round(yMin).toLocaleString()}</span>
+            <div className="flex-1 flex w-full min-h-0 relative">
+                
+                {/* Y軸標籤區 (固定寬度，右對齊) */}
+                <div className="w-12 flex flex-col justify-between text-right pr-2 py-0 h-full shrink-0 select-none relative z-10">
+                    {yTicks.map((tick, i) => (
+                        // 使用 absolute 定位確保與 Grid 線精準對齊，避免 flex space-between 的微小誤差
+                        <div 
+                            key={i} 
+                            className={`absolute right-2 text-xs font-mono font-bold transform -translate-y-1/2 ${tick.isZero ? 'text-red-500' : 'text-[#FFD700]/70'}`}
+                            style={{ top: `${tick.yPct}%` }}
+                        >
+                            {Math.abs(tick.val) >= 1000 ? (tick.val/1000).toFixed(1) + 'k' : tick.val}
+                        </div>
+                    ))}
                 </div>
 
-                <div className="absolute inset-0 left-10 right-4 bottom-2 top-2">
-                    <svg viewBox="0 0 100 100" className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                        {/* 網格 */}
-                        <line x1="0" y1="0" x2="100" y2="0" stroke="#333" strokeWidth="0.5" strokeDasharray="2" vectorEffect="non-scaling-stroke"/>
-                        <line x1="0" y1="100" x2="100" y2="100" stroke="#333" strokeWidth="0.5" strokeDasharray="2" vectorEffect="non-scaling-stroke"/>
-                        
-                        {/* 0 線 (破產線) - 紅色 */}
-                        <line 
-                            x1="0" y1={getY(0)} x2="100" y2={getY(0)} 
-                            stroke="#ef4444" strokeWidth="1" strokeDasharray="0" opacity="0.6" vectorEffect="non-scaling-stroke" 
-                        />
-                        {/* 0 線標籤 (SVG text) */}
-                        <text x="102" y={getY(0)} dy="3" fill="#ef4444" fontSize="3" fontWeight="bold" opacity="0.8">0</text>
-
-                        {/* 初始資金線 - 灰色虛線 */}
-                        <line 
-                            x1="0" y1={getY(initialBal)} x2="100" y2={getY(initialBal)} 
-                            stroke="#888" strokeWidth="1" strokeDasharray="4" opacity="0.5" vectorEffect="non-scaling-stroke" 
-                        />
-
-                        <polyline
-                            fill="none"
-                            stroke={lineColor}
-                            strokeWidth="1.5"
-                            points={getPoints()}
-                            vectorEffect="non-scaling-stroke"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        />
-                        <polygon
-                            fill={areaColor}
-                            points={`0,${getY(yMin)} ${getPoints()} 100,${getY(yMin)}`}
-                            vectorEffect="non-scaling-stroke"
-                        />
-                    </svg>
+                {/* 圖表繪圖區 (Flex-1 自動填滿) */}
+                <div className="flex-1 relative border-l border-b border-[#FFD700]/30 h-full overflow-visible">
                     
+                    {/* 背景網格線 */}
+                    <div className="absolute inset-0 w-full h-full pointer-events-none">
+                        {yTicks.map((tick, i) => (
+                            <div 
+                                key={i}
+                                className={`absolute w-full border-t ${tick.isZero ? 'border-red-500/50 border-dashed' : 'border-white/5'}`}
+                                style={{ top: `${tick.yPct}%` }}
+                            />
+                        ))}
+                    </div>
+
+                    {/* SVG 畫布 */}
+                    <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full overflow-visible" preserveAspectRatio="none">
+                        
+                        {/* 0 線 (強化顯示) */}
+                        <line x1="0" y1={getSvgY(0)} x2="100" y2={getSvgY(0)} stroke="#ef4444" strokeWidth="0.5" strokeDasharray="2" vectorEffect="non-scaling-stroke"/>
+                        
+                        {/* 初始本金線 (強化顯示) */}
+                        <line x1="0" y1={getSvgY(initialBal)} x2="100" y2={getSvgY(initialBal)} stroke="#888" strokeWidth="0.5" strokeDasharray="4" vectorEffect="non-scaling-stroke"/>
+
+                        {/* 走勢線 */}
+                        <polyline 
+                            fill="none" 
+                            stroke={lineColor} 
+                            strokeWidth="2" 
+                            points={points} 
+                            vectorEffect="non-scaling-stroke" 
+                            strokeLinejoin="round" 
+                            strokeLinecap="round"
+                        />
+                        
+                        {/* 漸層填充區域 */}
+                        <defs>
+                            <linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1">
+                                <stop offset="0%" stopColor={lineColor} stopOpacity="0.3" />
+                                <stop offset="100%" stopColor={lineColor} stopOpacity="0.05" />
+                            </linearGradient>
+                        </defs>
+                        <polygon points={`0,100 ${points} 100,100`} fill="url(#chartFill)" />
+                    </svg>
+
                     {/* X軸標籤 */}
-                    <div className="absolute -bottom-5 left-0 w-full flex justify-between text-[10px] font-bold text-gray-500 font-mono">
-                        <span>Start</span>
-                        <span>{Math.floor(data.length / 2)}局</span>
-                        <span>End</span>
+                    <div className="absolute -bottom-6 left-0 w-full flex justify-between px-0 text-[10px] text-[#FFD700]/60 font-mono">
+                        {xTicks.map(t => <span key={t}>{t}%</span>)}
                     </div>
                 </div>
             </div>
+            {/* 底部留白給 X 軸標籤 */}
+            <div className="h-4 shrink-0"/>
         </div>
     );
 };
 
-// --- UI 組件 ---
-const CustomSelect = ({ value, onChange, options, disabled = false }: { value: string, onChange: (v: string) => void, options: {l: string, v: string}[], disabled?: boolean }) => {
+const StatCard = ({ label, val, sub, color = "text-white" }: { label: string, val: string | number, sub?: string, color?: string }) => (
+    <div className="bg-white/5 rounded-lg p-3 border border-white/5 flex flex-col justify-between hover:bg-white/10 transition-colors">
+        <div className="flex justify-between items-start">
+            <span className="text-xs text-gray-400 font-bold tracking-wide">{label}</span>
+            {sub && <span className={`text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 ${color} font-mono`}>{sub}</span>}
+        </div>
+        <span className={`text-xl font-mono font-black leading-none mt-2 ${color} tracking-tight`}>{val}</span>
+    </div>
+);
+
+const CustomSelect = ({ label, value, onChange, options, disabled = false }: { label?: string, value: string, onChange: (v: string) => void, options: {l: string, v: string}[], disabled?: boolean }) => {
     const [open, setOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -192,38 +171,43 @@ const CustomSelect = ({ value, onChange, options, disabled = false }: { value: s
     }, []);
 
     return (
-        <div className={`relative w-full ${disabled ? 'opacity-50 pointer-events-none' : ''}`} ref={containerRef}>
-            <div 
-                onClick={() => !disabled && setOpen(!open)}
-                className="w-full h-10 md:h-12 bg-white/5 border border-white/10 rounded-lg px-3 flex items-center justify-between cursor-pointer hover:bg-white/10 transition-colors"
-            >
-                <span className="text-white text-sm md:text-base font-bold truncate">{options.find(o => o.v === value)?.l || value}</span>
-                <span className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
-            </div>
-            {open && (
-                <div className="absolute top-full left-0 w-full mt-1 bg-[#1a1a1a] border border-white/20 rounded-lg shadow-xl z-50 overflow-hidden max-h-60 overflow-y-auto">
-                    {options.map(o => (
-                        <div 
-                            key={o.v}
-                            onClick={() => { onChange(o.v); setOpen(false); }}
-                            className={`px-4 py-3 text-sm md:text-base font-bold cursor-pointer hover:bg-white/10 ${value === o.v ? 'text-[#FFD700] bg-white/5' : 'text-white'}`}
-                        >
-                            {o.l}
-                        </div>
-                    ))}
+        <div className={`flex flex-col gap-1.5 w-full ${disabled ? 'opacity-50 pointer-events-none' : ''}`} ref={containerRef}>
+            {label && <label className="text-sm text-[#FFD700] font-bold ml-1 tracking-wider">{label}</label>}
+            <div className="relative">
+                <div 
+                    onClick={() => !disabled && setOpen(!open)}
+                    className="w-full h-10 bg-[#1a1a1a] border border-white/20 rounded-lg px-3 flex items-center justify-between cursor-pointer hover:border-[#FFD700]/50 hover:bg-white/5 transition-all group"
+                >
+                    <span className="text-white text-sm font-bold truncate group-hover:text-[#FFD700] transition-colors">
+                        {options.find(o => o.v === value)?.l || value}
+                    </span>
+                    <span className={`text-gray-500 text-xs transition-transform duration-200 ${open ? 'rotate-180 text-[#FFD700]' : ''}`}>▼</span>
                 </div>
-            )}
+                {open && (
+                    <div className="absolute top-full left-0 w-full mt-1 bg-[#1a1a1a] border border-white/20 rounded-lg shadow-[0_4px_20px_rgba(0,0,0,0.8)] z-50 overflow-hidden max-h-60 overflow-y-auto animate-in fade-in zoom-in-95 duration-100">
+                        {options.map(o => (
+                            <div 
+                                key={o.v}
+                                onClick={() => { onChange(o.v); setOpen(false); }}
+                                className={`px-4 py-3 text-sm font-bold cursor-pointer transition-colors border-b border-white/5 last:border-0 ${value === o.v ? 'text-[#FFD700] bg-white/10' : 'text-gray-300 hover:bg-white/5 hover:text-white'}`}
+                            >
+                                {o.l}
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
         </div>
     );
 };
 
-const NumberInput = ({ label, value, onChange, step = 1, min = 0 }: { label: string, value: number, onChange: (v: number) => void, step?: number, min?: number }) => (
-    <div className="flex flex-col gap-1 w-full min-w-0">
-        <label className="text-sm text-gray-300 font-bold tracking-wide ml-1">{label}</label>
-        <div className="flex items-center bg-white/5 border border-white/10 rounded-lg overflow-hidden h-10 md:h-12 focus-within:border-[#FFD700] focus-within:ring-1 focus-within:ring-[#FFD700]/50 transition-all">
+const NumberInput = ({ label, value, onChange, step = 1, min = 0 }: { label?: string, value: number, onChange: (v: number) => void, step?: number, min?: number }) => (
+    <div className="flex flex-col gap-1.5 w-full min-w-0">
+        {label && <label className="text-sm text-[#FFD700] font-bold ml-1 tracking-wider">{label}</label>}
+        <div className="flex items-center h-10 bg-[#1a1a1a] border border-white/20 rounded-lg overflow-hidden group focus-within:border-[#FFD700] focus-within:ring-1 focus-within:ring-[#FFD700]/30 transition-all shadow-sm">
             <button 
                 onClick={() => onChange(Math.max(min, value - step))}
-                className="w-10 h-full flex items-center justify-center bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white active:bg-white/20 transition-colors border-r border-white/5 text-xl font-bold"
+                className="w-10 h-full flex items-center justify-center bg-white/0 hover:bg-white/10 text-gray-400 hover:text-white active:bg-white/20 transition-colors border-r border-white/10 text-sm font-bold"
             >
                 －
             </button>
@@ -231,11 +215,11 @@ const NumberInput = ({ label, value, onChange, step = 1, min = 0 }: { label: str
                 type="number" 
                 value={value} 
                 onChange={e => onChange(Number(e.target.value))}
-                className="flex-1 w-0 bg-transparent text-center text-white font-mono font-bold text-base md:text-xl outline-none appearance-none"
+                className="flex-1 w-0 bg-transparent text-center text-white font-mono font-bold text-sm outline-none appearance-none placeholder-gray-600"
             />
             <button 
                 onClick={() => onChange(value + step)}
-                className="w-10 h-full flex items-center justify-center bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white active:bg-white/20 transition-colors border-l border-white/5 text-xl font-bold"
+                className="w-10 h-full flex items-center justify-center bg-white/0 hover:bg-white/10 text-gray-400 hover:text-white active:bg-white/20 transition-colors border-l border-white/10 text-sm font-bold"
             >
                 ＋
             </button>
@@ -243,251 +227,234 @@ const NumberInput = ({ label, value, onChange, step = 1, min = 0 }: { label: str
     </div>
 );
 
-const StatCard = ({ label, val, sub, color = "text-white" }: { label: string, val: string | number, sub?: string, color?: string }) => (
-    <div className="flex flex-col justify-between bg-gradient-to-br from-white/5 to-transparent rounded-xl p-3 md:p-4 border border-white/5 shadow-sm relative overflow-hidden group hover:border-white/10 transition-all">
-        <div className="flex justify-between items-start mb-2">
-            <span className={`text-sm md:text-base font-black ${color}`}>{label}</span>
-            {sub && (
-                <span className={`text-xs md:text-sm font-bold font-mono px-2 py-1 rounded-full bg-black/60 border border-white/10 ${color}`}>
-                    {sub}
-                </span>
-            )}
-        </div>
-        <div className="flex items-end gap-1">
-            <span className={`text-2xl md:text-3xl font-black font-mono leading-none tracking-tight ${color}`}>{val}</span>
-        </div>
+const CheckGroup = ({ options, selected, onChange }: { options: {l: string, v: BetTarget}[], selected: BetTarget[], onChange: (v: BetTarget[]) => void }) => (
+    <div className="flex gap-2 flex-wrap">
+        {options.map(o => {
+            const isSel = selected.includes(o.v);
+            return (
+                <button 
+                    key={o.v}
+                    onClick={() => {
+                        if (isSel) onChange(selected.filter(x => x !== o.v));
+                        else onChange([...selected, o.v]);
+                    }}
+                    className={`px-3 py-2 text-xs font-bold rounded-lg border transition-all duration-200 ${isSel ? 'bg-[#FFD700] text-black border-[#FFD700] shadow-[0_0_10px_rgba(255,215,0,0.3)]' : 'bg-transparent text-gray-400 border-white/20 hover:border-white/40 hover:text-white'}`}
+                >
+                    {o.l}
+                </button>
+            );
+        })}
     </div>
 );
 
-// --- 主組件 ---
 export const Sim = ({ onClose }: { onClose: () => void }) => {
-    const [strategy, setStrategy] = useState('martingale');
-    const [target, setTarget] = useState('P');
     const [shoes, setShoes] = useState(50);
     const [bal, setBal] = useState(10000);
     const [baseBet, setBaseBet] = useState(100);
-    const [chartData, setChartData] = useState<number[]>([]);
-    const [stats, setStats] = useState<any>(null);
-    const [running, setRunning] = useState(false);
+    const [strategyName, setStrategyName] = useState('martingale');
 
-    const isDynamicStrategy = ['dynamic_example'].includes(strategy);
+    const [trigCount, setTrigCount] = useState(4);
+    const [trigTargets, setTrigTargets] = useState<BetTarget[]>(['P', 'B']);
+    const [betAction, setBetAction] = useState<string>('FOLLOW');
+    const [mode, setMode] = useState<'WIN_CHASE'|'LOSS_CHASE'|'ONCE'>('WIN_CHASE');
 
-    useEffect(() => {
-        if (isDynamicStrategy) {
-            setTarget('AUTO'); 
-        } else if (target === 'AUTO') {
-            setTarget('P');
-        }
-    }, [strategy]);
+    const [res, setRes] = useState<any>(null);
+    const [loading, setLoading] = useState(false);
 
-    const runSim = async () => {
-        setRunning(true);
-        setTimeout(() => {
-            const startTime = performance.now();
-            let currentBal = bal;
-            let currentBet = baseBet;
-            const historyBal = [currentBal];
-            
-            let totalHands = 0;
-            let bWin = 0, pWin = 0, tWin = 0;
-            let bpCnt = 0, ppCnt = 0;
-            let winCnt = 0, loseCnt = 0;
+    const handleRun = async () => {
+        setLoading(true);
+        const config: StrategyConfig = {
+            name: strategyName,
+            shoes,
+            initialBal: bal,
+            baseBet,
+            custom: strategyName === 'custom' ? {
+                triggerCount: trigCount,
+                triggerTargets: trigTargets,
+                betAction: betAction as any,
+                mode
+            } : undefined
+        };
 
-            const fibSeq = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610];
-            let fibIdx = 0;
-            let paroliStep = 0;
+        const result = await runSimulation(config);
+        setRes(result);
+        setLoading(false);
+    };
 
-            for (let s = 0; s < shoes; s++) {
-                const shoe = createShoe();
-                const cutPos = Math.floor(Math.random() * (200 - 12 + 1)) + 12;
-
-                while (shoe.length > cutPos) {
-                    const res = runHand(shoe);
-                    if (!res) break;
-
-                    totalHands++;
-                    if (res.w === 'B') bWin++;
-                    if (res.w === 'P') pWin++;
-                    if (res.w === 'T') tWin++;
-                    if (res.bp) bpCnt++;
-                    if (res.pp) ppCnt++;
-
-                    if (res.w !== 'T') {
-                        const won = target === 'AUTO' ? false : target === res.w;
-                        
-                        if (won) {
-                            const payout = (target === 'B') ? 0.95 : 1;
-                            const profit = currentBet * payout;
-                            currentBal += profit;
-                            winCnt++;
-                            
-                            if (strategy === 'martingale') {
-                                currentBet = baseBet;
-                            } else if (strategy === 'paroli') {
-                                paroliStep++;
-                                if (paroliStep >= 3) {
-                                    currentBet = baseBet;
-                                    paroliStep = 0;
-                                } else {
-                                    currentBet *= 2; 
-                                }
-                            } else if (strategy === 'fibonacci') {
-                                fibIdx = Math.max(0, fibIdx - 2);
-                                currentBet = baseBet * fibSeq[fibIdx];
-                            }
-                        } else {
-                            currentBal -= currentBet;
-                            loseCnt++;
-
-                            if (strategy === 'martingale') {
-                                currentBet *= 2;
-                            } else if (strategy === 'paroli') {
-                                currentBet = baseBet;
-                                paroliStep = 0;
-                            } else if (strategy === 'fibonacci') {
-                                fibIdx = Math.min(fibSeq.length - 1, fibIdx + 1);
-                                currentBet = baseBet * fibSeq[fibIdx];
-                            }
-                        }
-                    }
-                    
-                    historyBal.push(currentBal);
-                    if (currentBal <= 0) { currentBal = 0; break; }
-                    if (currentBet > currentBal) currentBet = currentBal;
-                }
-                if (currentBal <= 0) break;
-            }
-
-            const getPct = (v: number) => totalHands > 0 ? ((v / totalHands) * 100).toFixed(1) + '%' : '0%';
-
-            setStats({
-                total: totalHands,
-                b: { c: bWin, p: getPct(bWin) },
-                p: { c: pWin, p: getPct(pWin) },
-                t: { c: tWin, p: getPct(tWin) },
-                bp: { c: bpCnt, p: getPct(bpCnt) },
-                pp: { c: ppCnt, p: getPct(ppCnt) },
-                win: { c: winCnt, p: getPct(winCnt) },
-                lose: { c: loseCnt, p: getPct(loseCnt) },
-                endBal: currentBal,
-                net: currentBal - bal
-            });
-            setChartData(historyBal);
-            setRunning(false);
-            console.log(`Simulation finished in ${Math.round(performance.now() - startTime)}ms`);
-        }, 50);
+    const downloadLog = () => {
+        if (!res || !res.logs) return;
+        const blob = new Blob([res.logs.join('\n')], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `simulation_log_${Date.now()}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     };
 
     const strategies = [
-        {l: '馬丁格爾倍投', v: 'martingale'},
-        {l: '帕羅利過關', v: 'paroli'},
-        {l: '費波那契數列', v: 'fibonacci'},
-        {l: '均注策略', v: 'flat'},
+        {l: '馬丁格爾 (Martingale)', v: 'martingale'},
+        {l: '帕羅利 (Paroli)', v: 'paroli'},
+        {l: '費波那契 (Fibonacci)', v: 'fibonacci'},
+        {l: '平注 (Flat)', v: 'flat'},
+        {l: '★ 自訂策略 (Custom)', v: 'custom'},
     ];
 
-    const targets = [
-        {l: '投注閒家 (P)', v: 'P'},
-        {l: '投注莊家 (B)', v: 'B'},
-        {l: '自動判斷 (鎖定)', v: 'AUTO'},
+    const targetOptions: {l: string, v: BetTarget}[] = [
+        {l: '閒', v: 'P'},
+        {l: '莊', v: 'B'},
+        {l: '和', v: 'T'},
+        {l: '莊對', v: 'BP'},
+        {l: '閒對', v: 'PP'},
+        {l: '幸運6', v: 'L6'},
     ];
 
     return (
-        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-xl animate-in fade-in duration-300 overflow-hidden flex flex-col">
-            {/* 主容器：限制最大寬高，滿屏 */}
-            <div className="w-full max-w-[1600px] mx-auto bg-[#0a0a0a] border-x border-b lg:border border-[#333] lg:rounded-2xl shadow-2xl flex flex-col flex-1 h-full max-h-screen overflow-hidden">
-                
-                {/* Header */}
-                <div className="flex justify-between items-center px-4 md:px-6 py-4 border-b border-white/10 bg-[#111] shrink-0">
-                    <div className="flex items-center gap-3">
-                        <div className="w-1.5 h-6 bg-[#FFD700] rounded-full shadow-[0_0_15px_#FFD700]"></div>
-                        <h2 className="text-xl md:text-2xl font-black text-white tracking-widest">策略模擬器</h2>
-                    </div>
-                    <button onClick={onClose} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-500/20 text-gray-400 hover:text-red-400 flex items-center justify-center transition-all text-2xl">✕</button>
-                </div>
-
-                {/* Controls */}
-                <div className="p-4 md:p-6 border-b border-white/10 bg-[#0f0f0f] shrink-0">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 md:gap-6 items-end">
-                        <div className="flex flex-col gap-1 w-full lg:col-span-1">
-                            <label className="text-sm text-gray-300 font-bold tracking-wide ml-1">使用策略</label>
-                            <CustomSelect value={strategy} onChange={setStrategy} options={strategies} />
-                        </div>
-                        <div className="flex flex-col gap-1 w-full lg:col-span-1">
-                            <label className="text-sm text-gray-300 font-bold tracking-wide ml-1">
-                                {isDynamicStrategy ? '投注目標 (自動)' : '固定投注目標'}
-                            </label>
-                            <CustomSelect 
-                                value={target} 
-                                onChange={setTarget} 
-                                options={targets} 
-                                disabled={isDynamicStrategy} 
-                            />
-                        </div>
-                        <NumberInput label="模擬牌靴數" value={shoes} onChange={setShoes} step={10} min={1} />
-                        <NumberInput label="初始金額" value={bal} onChange={setBal} step={1000} min={100} />
-                        <NumberInput label="單注金額" value={baseBet} onChange={setBaseBet} step={100} min={10} />
-                        
-                        <button 
-                            onClick={runSim}
-                            disabled={running}
-                            className={`w-full h-10 md:h-12 bg-gradient-to-r from-[#FFD700] to-[#FFC000] hover:to-[#FFD700] text-black font-black text-lg rounded-lg shadow-[0_0_20px_rgba(255,215,0,0.4)] transition-all active:scale-95 transform mt-4 lg:mt-0 ${running ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        >
-                            {running ? '計算中...' : '開始模擬'}
-                        </button>
-                    </div>
-                </div>
-
-                {/* Content - 使用 min-h-0 確保 Flexbox 正確處理溢出，避免被切掉 */}
-                <div className="flex-1 flex flex-col lg:flex-row min-h-0 bg-[#050505] p-4 gap-4 overflow-hidden">
+        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-xl animate-in fade-in duration-200 overflow-y-auto lg:overflow-hidden">
+            <div className="w-full min-h-screen lg:h-screen flex flex-col p-2 lg:p-6">
+                <div className="w-full max-w-[1400px] mx-auto bg-[#0a0a0a] border border-[#333] rounded-xl shadow-2xl flex flex-col flex-1 lg:overflow-hidden">
                     
-                    {/* Left: Chart - 佔用剩餘空間，確保高度自適應 */}
-                    <div className="flex-1 flex flex-col min-h-0 h-[40vh] lg:h-auto shrink-0">
-                         {/* 傳入初始金額以繪製起始線 */}
-                         <Chart data={chartData} initialBal={bal} />
+                    <div className="flex justify-between items-center px-4 py-3 border-b border-white/10 bg-[#111]">
+                        <h2 className="text-lg font-black text-white tracking-widest flex items-center gap-2">
+                            <span className="text-xl">📊</span> 策略模擬器
+                        </h2>
+                        <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/10 text-gray-400 hover:text-white flex items-center justify-center transition-colors">✕</button>
                     </div>
 
-                    {/* Right: Stats - 右側面板，內容過多時內部滾動 */}
-                    <div className="w-full lg:w-[420px] bg-[#0c0c0c] border border-white/10 rounded-xl p-4 shrink-0 flex flex-col gap-4 overflow-hidden h-full">
-                        {stats ? (
-                            <>
-                                <div className="grid grid-cols-2 gap-3 shrink-0">
-                                    <div className="bg-white/5 p-4 rounded-xl border border-white/10">
-                                        <div className="text-gray-400 text-sm font-bold mb-1">最終金額</div>
-                                        <div className="text-[#FFD700] font-mono text-3xl font-black tracking-tight truncate">
-                                            ${stats.endBal.toLocaleString()}
-                                        </div>
-                                    </div>
-                                    <div className="bg-white/5 p-4 rounded-xl border border-white/10">
-                                        <div className="text-gray-400 text-sm font-bold mb-1">純收益/虧損</div>
-                                        <div className={`font-mono text-3xl font-black tracking-tight truncate ${stats.net >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                            {stats.net >= 0 ? '+' : ''}{stats.net.toLocaleString()}
-                                        </div>
-                                    </div>
+                    <div className="flex-1 flex flex-col lg:flex-row min-h-0">
+                        <div className="w-full lg:w-[360px] bg-[#0f0f0f] border-r border-white/10 p-5 overflow-y-auto custom-scrollbar flex flex-col gap-6 shrink-0">
+                            
+                            <div className="space-y-4">
+                                <h3 className="text-sm text-[#FFD700] font-black uppercase tracking-widest border-b border-[#FFD700]/20 pb-2">基礎設定</h3>
+                                <CustomSelect label="策略選擇" value={strategyName} onChange={setStrategyName} options={strategies} />
+                                <div className="grid grid-cols-2 gap-4">
+                                    <NumberInput label="模擬牌靴" value={shoes} onChange={setShoes} step={10} min={1} />
+                                    <NumberInput label="初始本金" value={bal} onChange={setBal} step={1000} min={100} />
                                 </div>
-
-                                <div className="grid grid-cols-2 gap-3 overflow-y-auto custom-scrollbar pr-1 pb-2 min-h-0">
-                                    <div className="col-span-2">
-                                        <StatCard label="模擬總局數" val={stats.total} />
-                                    </div>
-                                    <StatCard label="莊贏" val={stats.b.c} sub={stats.b.p} color="text-red-500" />
-                                    <StatCard label="閒贏" val={stats.p.c} sub={stats.p.p} color="text-blue-500" />
-                                    <StatCard label="和局" val={stats.t.c} sub={stats.t.p} color="text-green-500" />
-                                    <StatCard label="莊對" val={stats.bp.c} sub={stats.bp.p} color="text-red-400" />
-                                    <StatCard label="閒對" val={stats.pp.c} sub={stats.pp.p} color="text-blue-400" />
-                                    <StatCard label="獲勝局數" val={stats.win.c} sub={stats.win.p} color="text-green-400" />
-                                    <StatCard label="虧損局數" val={stats.lose.c} sub={stats.lose.p} color="text-red-400" />
-                                </div>
-                            </>
-                        ) : (
-                            <div className="h-full flex flex-col items-center justify-center text-gray-600 gap-4 opacity-50 min-h-[300px]">
-                                <div className="text-6xl">📊</div>
-                                <div className="text-xl font-bold">請點擊開始模擬</div>
+                                <NumberInput label="基礎注碼" value={baseBet} onChange={setBaseBet} step={100} min={10} />
                             </div>
-                        )}
+
+                            {strategyName === 'custom' && (
+                                <div className="space-y-5 animate-in slide-in-from-left-5 duration-300">
+                                    <h3 className="text-sm text-[#FFD700] font-black uppercase tracking-widest border-b border-[#FFD700]/20 pb-2">自訂規則</h3>
+                                    
+                                    <div className="bg-[#161616] p-4 rounded-xl border border-white/10 space-y-4">
+                                        <div className="text-sm text-[#FFD700] font-bold flex items-center gap-2">
+                                            <span className="w-5 h-5 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-[#FFD700]">1</span>
+                                            觸發條件
+                                        </div>
+                                        <NumberInput label="連續出現次數" value={trigCount} onChange={setTrigCount} min={1} />
+                                        <div className="flex flex-col gap-2">
+                                            <span className="text-sm text-[#FFD700] font-bold ml-1 tracking-wider uppercase">監聽目標 (可複選)</span>
+                                            <CheckGroup options={targetOptions} selected={trigTargets} onChange={setTrigTargets} />
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-[#161616] p-4 rounded-xl border border-white/10 space-y-4">
+                                        <div className="text-sm text-[#FFD700] font-bold flex items-center gap-2">
+                                            <span className="w-5 h-5 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-[#FFD700]">2</span>
+                                            執行動作
+                                        </div>
+                                        <CustomSelect 
+                                            label="下注對象" 
+                                            value={betAction} 
+                                            onChange={setBetAction} 
+                                            options={[{l:'跟隨觸發目標', v:'FOLLOW'}, ...targetOptions]} 
+                                        />
+                                        <div className="text-xs text-gray-500 px-2 leading-relaxed">
+                                            * 跟隨模式：若觸發條件是「閒」，則下注「閒」。
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-[#161616] p-4 rounded-xl border border-white/10 space-y-4">
+                                        <div className="text-sm text-[#FFD700] font-bold flex items-center gap-2">
+                                            <span className="w-5 h-5 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-[#FFD700]">3</span>
+                                            資金管理
+                                        </div>
+                                        <div className="flex flex-col gap-3">
+                                            <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all duration-200 border ${mode==='WIN_CHASE'?'bg-[#FFD700]/10 border-[#FFD700]/50':'bg-black/20 border-white/5 hover:border-white/20'}`}>
+                                                <input type="radio" checked={mode === 'WIN_CHASE'} onChange={() => setMode('WIN_CHASE')} className="accent-[#FFD700] w-4 h-4"/>
+                                                <div className="flex flex-col">
+                                                    <span className={`text-sm font-bold ${mode==='WIN_CHASE'?'text-[#FFD700]':'text-gray-400'}`}>追勝模式</span>
+                                                    <span className="text-xs text-gray-500">贏了繼續追，輸了停止 (抓長龍)</span>
+                                                </div>
+                                            </label>
+                                            <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all duration-200 border ${mode==='LOSS_CHASE'?'bg-[#FFD700]/10 border-[#FFD700]/50':'bg-black/20 border-white/5 hover:border-white/20'}`}>
+                                                <input type="radio" checked={mode === 'LOSS_CHASE'} onChange={() => setMode('LOSS_CHASE')} className="accent-[#FFD700] w-4 h-4"/>
+                                                <div className="flex flex-col">
+                                                    <span className={`text-sm font-bold ${mode==='LOSS_CHASE'?'text-[#FFD700]':'text-gray-400'}`}>負追模式 (馬丁)</span>
+                                                    <span className="text-xs text-gray-500">輸了倍投，贏了停止 (斷龍)</span>
+                                                </div>
+                                            </label>
+                                            <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all duration-200 border ${mode==='ONCE'?'bg-[#FFD700]/10 border-[#FFD700]/50':'bg-black/20 border-white/5 hover:border-white/20'}`}>
+                                                <input type="radio" checked={mode === 'ONCE'} onChange={() => setMode('ONCE')} className="accent-[#FFD700] w-4 h-4"/>
+                                                <div className="flex flex-col">
+                                                    <span className={`text-sm font-bold ${mode==='ONCE'?'text-[#FFD700]':'text-gray-400'}`}>單次模式</span>
+                                                    <span className="text-xs text-gray-500">觸發後只打一口，無論輸贏</span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <button 
+                                onClick={handleRun}
+                                disabled={loading}
+                                className={`w-full py-4 mt-2 font-black rounded-xl text-base tracking-wider shadow-xl transition-all transform active:scale-[0.98] ${loading ? 'bg-gray-700 text-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-[#FFD700] to-[#FFC000] hover:to-[#FFD700] text-black shadow-[#FFD700]/20'}`}
+                            >
+                                {loading ? '模擬運算中...' : '開始模擬'}
+                            </button>
+                        </div>
+
+                        <div className="flex-1 flex flex-col min-h-0 bg-[#050505] p-4 gap-4 overflow-y-auto lg:overflow-hidden">
+                            <div className="flex-none h-[220px] lg:h-[35%] w-full">
+                                <Chart data={res?.history || []} initialBal={bal} />
+                            </div>
+
+                            <div className="flex-1 min-h-0 flex flex-col">
+                                <div className="flex justify-between items-center mb-2 border-b border-white/5 pb-2">
+                                    <span className="text-sm text-gray-500 font-bold uppercase tracking-widest ml-1">統計數據</span>
+                                    {res?.logs && (
+                                        <button 
+                                            onClick={downloadLog} 
+                                            className="text-xs font-bold text-[#FFD700] hover:text-white transition-colors flex items-center gap-1 bg-white/5 px-3 py-1 rounded-full border border-white/10"
+                                        >
+                                            <span>📥</span> 下載測試日誌
+                                        </button>
+                                    )}
+                                </div>
+                                
+                                {res ? (
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 overflow-y-auto custom-scrollbar pb-2 pr-1">
+                                        <StatCard label="總局數" val={res.total} />
+                                        <StatCard label="下注次數" val={res.betCount} sub={`${((res.betCount/res.total)*100).toFixed(1)}%`} />
+                                        <StatCard label="最終金額" val={`$${res.endBal.toLocaleString()}`} color={res.endBal >= bal ? 'text-green-400' : 'text-red-400'} />
+                                        <StatCard label="淨利/損" val={(res.endBal - bal).toLocaleString()} color={res.endBal >= bal ? 'text-green-400' : 'text-red-400'} />
+                                        <StatCard label="勝率" val={`${((res.wins / (res.wins + res.losses || 1))*100).toFixed(1)}%`} />
+                                        
+                                        <div className="col-span-2 md:col-span-4 h-[1px] bg-white/5 my-1"/>
+                                        
+                                        <StatCard label="閒贏 (P)" val={res.counts.P} sub={`${((res.counts.P/res.total)*100).toFixed(1)}%`} color="text-blue-400"/>
+                                        <StatCard label="莊贏 (B)" val={res.counts.B} sub={`${((res.counts.B/res.total)*100).toFixed(1)}%`} color="text-red-400"/>
+                                        <StatCard label="和局 (T)" val={res.counts.T} sub={`${((res.counts.T/res.total)*100).toFixed(1)}%`} color="text-green-400"/>
+                                        <StatCard label="莊對" val={res.counts.BP} sub={`${((res.counts.BP/res.total)*100).toFixed(1)}%`} color="text-red-400"/>
+                                        <StatCard label="閒對" val={res.counts.PP} sub={`${((res.counts.PP/res.total)*100).toFixed(1)}%`} color="text-blue-400"/>
+                                        <StatCard label="幸運6" val={res.counts.L6} sub={`${((res.counts.L6/res.total)*100).toFixed(1)}%`} color="text-yellow-400"/>
+                                    </div>
+                                ) : (
+                                    <div className="flex-1 flex flex-col items-center justify-center text-gray-700 font-bold border border-dashed border-white/10 rounded-xl gap-3 bg-white/[0.02]">
+                                        <span className="text-5xl opacity-20">⚡</span>
+                                        <span className="opacity-50">請設定左側參數並點擊「開始模擬」</span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-            
             <style>{`
                 input[type=number]::-webkit-inner-spin-button, 
                 input[type=number]::-webkit-outer-spin-button { 

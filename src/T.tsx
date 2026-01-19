@@ -4,7 +4,8 @@ import {C} from './C';
 import {Z} from './Z';
 import {V} from './L';
 import {Roads} from './R';
-import {Sim} from './Sim'; // [新增] 引入模擬器組件
+import {Sim} from './Sim';
+import {AutoUpdate} from './AutoUpdate';
 
 const CH = ({v, s, set}: {v: number, s: number, set: (v: number) => void}) => {
   const bg = v === 100 ? 'bg-slate-300 border-slate-500 text-slate-800' : 
@@ -88,7 +89,6 @@ const SpeedControl = () => {
     );
 };
 
-// [新增] 左下角模擬器按鈕
 const SimButton = ({ onClick }: { onClick: () => void }) => {
     return (
         <button 
@@ -102,22 +102,24 @@ const SimButton = ({ onClick }: { onClick: () => void }) => {
 };
 
 export const T = () => {
-  const {ph, bh, bal, bts, st, rs, wa, auto, cd, chip, history, ini, add, togAuto, setChip, s, spd, cutPos} = useS();
-  // [新增] 模擬器顯示狀態
+  const {ph, bh, bal, bts, st, rs, wa, auto, cd, chip, history, ini, add, clr, togAuto, setChip, s, spd, cutPos} = useS();
   const [showSim, setShowSim] = useState(false);
   
   useEffect(() => { ini() }, []);
   const pVal = V(ph);
   const bVal = V(bh);
 
+  // 判斷是否可以清除 (下注階段且有下注)
+  const hasBet = Object.values(bts).some(v => v > 0);
+  const canClear = st === 0 && hasBet;
+
   return (
     <div className="flex h-[100dvh] w-full flex-col bg-[#003300] bg-[radial-gradient(circle_at_center,_#005500_0%,_#002200_100%)] text-[#F4E4BC] overflow-hidden">
       
-      {/* 功能按鈕區 */}
+      <AutoUpdate />
       <SpeedControl />
       <SimButton onClick={() => setShowSim(true)} />
       
-      {/* [新增] 模擬器視窗 */}
       {showSim && <Sim onClose={() => setShowSim(false)} />}
 
       <div className="relative h-[45%] w-full shadow-[inset_0_-20px_40px_rgba(0,0,0,0.6)] z-20 overflow-hidden">
@@ -190,6 +192,22 @@ export const T = () => {
 
         <div className="w-full flex items-center justify-center gap-4 md:gap-8 pt-2 pb-4 overflow-visible shrink-0 bg-black/20 h-auto">
             <div className="flex gap-3 md:gap-6 px-2 z-50">
+                
+                {/* [新增] 清除按鈕 */}
+                <button 
+                    onClick={canClear ? clr : undefined}
+                    className={`
+                        relative flex flex-col items-center justify-center rounded-full border-2 md:border-4 shadow-xl 
+                        transition-all duration-300 flex-shrink-0 h-10 w-10 md:h-16 md:w-16
+                        ${canClear 
+                            ? 'bg-red-600 border-red-400 text-white hover:scale-105 active:scale-95 cursor-pointer' 
+                            : 'bg-gray-700 border-gray-600 text-gray-400 opacity-50 cursor-not-allowed'
+                        }
+                    `}
+                >
+                    <span className="text-[10px] md:text-sm font-bold">清除</span>
+                </button>
+
                 {[100, 500, 1000, 10000].map(v => <CH key={v} v={v} s={chip} set={setChip} />)}
             </div>
             <button onClick={togAuto} className={`
