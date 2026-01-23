@@ -1,5 +1,5 @@
 // --- 基礎型別定義 ---
-export type HandResult = { w: 'P'|'B'|'T'; bp: boolean; pp: boolean; l6: boolean };
+export type HandResult = { w: 'P'|'B'|'T'; bp: boolean; pp: boolean; l6: boolean; bv: number }; // [修改] 加入 bv (莊家點數) 以供判定
 export type BetTarget = 'P'|'B'|'T'|'BP'|'PP'|'L6';
 
 export interface StrategyConfig {
@@ -7,25 +7,27 @@ export interface StrategyConfig {
     shoes: number;
     baseBet: number;
     initialBal: number;
+    noCommission: boolean; // [新增] 免傭模式開關
     custom?: {
         triggerCount: number;       
         triggerTargets: BetTarget[];
         betAction: BetTarget | 'FOLLOW'; 
         mode: 'WIN_CHASE' | 'LOSS_CHASE' | 'ONCE'; 
+        tierBets?: number[]; 
     };
 }
 
 export interface SimStats {
     total: number;
-    betCount: number;
     wins: number;
     losses: number;
     ties: number;
+    betCount: number;
     endBal: number;
     maxDD: number; 
     history: number[];
     counts: Record<string, number>;
-    logs: string[]; // [新增] 決策日誌
+    logs: string[];
 }
 
 // --- 核心工具函式 ---
@@ -88,17 +90,32 @@ const runHand = (shoe: {r: number, v: number}[]): HandResult | null => {
     const bp = b1.r === b2.r;
     const l6 = w === 'B' && bv === 6;
 
-    return { w, pp, bp, l6 };
+    return { w, pp, bp, l6, bv };
 };
 
-const getPayout = (target: BetTarget, isL6: boolean): number => {
+// [修改] 賠率計算 (含免傭邏輯)
+// 參數: 下注目標, 是否免傭, 莊家點數(用於判斷莊6)
+const getPayout = (target: BetTarget, noComm: boolean, bv: number): number => {
     switch (target) {
-        case 'P': return 2.0;
-        case 'B': return isL6 ? 1.5 : 1.95; 
+        case 'P': return 2.0; // 閒永遠 1:1 (含本金2.0)
+        case 'B': 
+            if (noComm) {
+                // 免傭模式
+                // 莊贏且6點 -> 1賠0.5 (含本金1.5)
+                if (bv === 6) return 1.5;
+                // 其他莊贏 -> 1賠1 (含本金2.0)
+                return 2.0;
+            } else {
+                // 標準模式 (抽水5%) -> 1賠0.95 (含本金1.95)
+                return 1.95;
+            }
         case 'T': return 9.0;
         case 'BP': 
         case 'PP': return 12.0;
-        case 'L6': return 13.0; 
+        case 'L6': 
+            // 幸運6通常是兩張牌12倍，三張牌20倍
+            // 這裡簡化模擬，取一般期望值或固定 12 倍 (含本金13)
+            return 13.0; 
         default: return 0;
     }
 };
@@ -134,13 +151,11 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
             const counts = { B:0, P:0, T:0, BP:0, PP:0, L6:0 };
             let wins = 0, losses = 0, ties = 0;
             let total = 0;
-            let betCount = 0;
+            let betCount = 0; 
 
-            // 日誌收集器
             const logs: string[] = [];
-            // 寫入日誌 Helper
             const addLog = (msg: string) => {
-                if (total <= 200) { // 只記錄前 200 手
+                if (total <= 200) { 
                     logs.push(`[第 ${total + 1} 局] ${msg}`);
                 }
             };
@@ -157,7 +172,8 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
             let lastResults: HandResult[] = []; 
             let customTarget: BetTarget | null = null; 
             let waitForBreak = false; 
-            let trackedTriggerType: BetTarget | null = null; 
+            let trackedTriggerType: BetTarget | null = null;
+            let winChaseTierIndex = 0;
 
             for (let s = 0; s < cfg.shoes; s++) {
                 const shoe = createShoe();
@@ -167,17 +183,16 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
                 sessionActive = false;
                 waitForBreak = false;
                 trackedTriggerType = null;
+                winChaseTierIndex = 0;
                 
                 if (total <= 200) logs.push(`--- 第 ${s + 1} 靴開始 ---`);
 
                 while (shoe.length > cutPos) {
                     let placeBet = false;
-                    let logMsg = ""; // 本局決策訊息
+                    let logMsg = ""; 
 
                     if (cfg.name === 'custom' && custom) {
                         const N = custom.triggerCount;
-                        
-                        // 狀態描述
                         let statusStr = waitForBreak ? "等待斷路中" : sessionActive ? "策略執行中" : "監聽中";
                         
                         if (waitForBreak) {
@@ -186,9 +201,8 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
                         } else if (sessionActive) {
                             placeBet = true;
                             target = customTarget;
-                            logMsg += `[狀態: ${statusStr}] 繼續下注: ${target}, 金額: ${bet}. `;
+                            logMsg += `[狀態: ${statusStr}] 繼續下注: ${target}, 金額: ${bet} (Lv.${winChaseTierIndex + 1}). `;
                         } else {
-                            // 檢查觸發
                             if (lastResults.length >= N) {
                                 const slice = lastResults.slice(-N);
                                 const matchedTrigger = custom.triggerTargets.find(t => {
@@ -198,7 +212,6 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
                                 if (matchedTrigger) {
                                     sessionActive = true;
                                     placeBet = true;
-                                    bet = cfg.baseBet;
                                     trackedTriggerType = matchedTrigger;
 
                                     if (custom.betAction === 'FOLLOW') {
@@ -207,25 +220,32 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
                                         customTarget = custom.betAction;
                                     }
                                     target = customTarget;
-                                    logMsg += `[觸發!] 發現連續 ${N} 個 ${matchedTrigger}. 啟動策略 -> 下注: ${target}, 金額: ${bet}. `;
+
+                                    if (custom.mode === 'WIN_CHASE' && custom.tierBets && custom.tierBets.length > 0) {
+                                        winChaseTierIndex = 0; 
+                                        bet = custom.tierBets[0];
+                                    } else {
+                                        bet = cfg.baseBet;
+                                    }
+
+                                    logMsg += `[觸發!] 連續${N}個${matchedTrigger}. 下注:${target}, 金額:${bet}. `;
                                 } else {
-                                    logMsg += `[狀態: ${statusStr}] 近 ${N} 局未滿足條件. `;
+                                    logMsg += `[狀態: ${statusStr}] 近 ${N} 局未滿足. `;
                                 }
                             } else {
-                                logMsg += `[狀態: ${statusStr}] 樣本不足 ${N} (目前 ${lastResults.length}). `;
+                                logMsg += `[狀態: ${statusStr}] 樣本不足 ${N}. `;
                             }
                         }
                     } else {
                         placeBet = true;
                         target = 'P';
-                        logMsg += `[標準策略] 下注: P, 金額: ${bet}. `;
+                        logMsg += `[標準] 下注: P, 金額: ${bet}. `;
                     }
 
-                    // 執行發牌
                     const res = runHand(shoe);
                     if (!res) break;
 
-                    addLog(logMsg + `開牌: ${res.w} (BP:${res.bp ? 'Y':'N'}, PP:${res.pp ? 'Y':'N'}, L6:${res.l6 ? 'Y':'N'})`);
+                    addLog(logMsg + `開: ${res.w} (莊${res.bv}點)`);
 
                     total++;
                     if (res.w === 'B') counts.B++;
@@ -241,11 +261,9 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
                         
                         if (waitForBreak && trackedTriggerType) {
                             if (!checkMatch(res, trackedTriggerType)) {
-                                addLog(`>>> 斷路確認! 開出 ${res.w} 與鎖定類型 ${trackedTriggerType} 不同. 解除鎖定.`);
+                                addLog(`>>> 斷路確認! 解除鎖定.`);
                                 waitForBreak = false; 
                                 trackedTriggerType = null;
-                            } else {
-                                addLog(`... 尚未斷路 (仍是 ${trackedTriggerType}). 繼續等待.`);
                             }
                         }
                     }
@@ -264,13 +282,17 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
 
                         if (tie) {
                             ties++;
-                            addLog(`結果: 和局退款. 餘額: ${bal}`);
+                            addLog(`結果: 和局退款.`);
                         } else if (win) {
                             wins++;
-                            const payout = getPayout(target, res.l6);
+                            // [修改] 計算賠率時傳入 noCommission 和 莊家點數(res.bv)
+                            const payout = getPayout(target, cfg.noCommission, res.bv);
                             const profit = bet * (payout - 1);
                             bal += profit;
-                            addLog(`結果: 贏! 獲利: +${profit.toFixed(1)}. 餘額: ${bal.toFixed(1)}`);
+                            
+                            // 特別記錄莊6半贏的情況
+                            const isHalfWin = cfg.noCommission && target === 'B' && res.bv === 6;
+                            addLog(`結果: ${isHalfWin ? '莊6贏半' : '贏'}! +${profit.toFixed(1)}. 餘額: ${bal.toFixed(0)}`);
 
                             if (cfg.name === 'martingale') bet = cfg.baseBet;
                             else if (cfg.name === 'paroli') {
@@ -284,24 +306,34 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
                             }
                             else if (cfg.name === 'custom' && custom) {
                                 if (custom.mode === 'WIN_CHASE') {
-                                    bet = cfg.baseBet; 
-                                    addLog(`[策略] 追勝模式: 贏了繼續追.`);
+                                    if (custom.tierBets && custom.tierBets.length > 0) {
+                                        winChaseTierIndex++;
+                                        if (winChaseTierIndex >= custom.tierBets.length) {
+                                            winChaseTierIndex = 0;
+                                            addLog(`[策略] 追勝全通關! 循環回 Lv.1`);
+                                        } else {
+                                            addLog(`[策略] 追勝成功! 晉級至 Lv.${winChaseTierIndex + 1}`);
+                                        }
+                                        bet = custom.tierBets[winChaseTierIndex];
+                                    } else {
+                                        bet = cfg.baseBet; 
+                                    }
                                 } else if (custom.mode === 'LOSS_CHASE') {
                                     sessionActive = false;
                                     waitForBreak = true;
                                     bet = cfg.baseBet;
-                                    addLog(`[策略] 負追模式: 贏了(回本). 停止下注, 進入等待斷路.`);
-                                } else { // ONCE
+                                    addLog(`[策略] 負追贏了. 停利等待斷路.`);
+                                } else { 
                                     sessionActive = false;
                                     waitForBreak = true;
-                                    addLog(`[策略] 單次模式: 結束. 進入等待斷路.`);
+                                    addLog(`[策略] 單次結束. 等待斷路.`);
                                 }
                             }
 
                         } else {
                             losses++;
                             bal -= bet;
-                            addLog(`結果: 輸! 損失: -${bet}. 餘額: ${bal.toFixed(1)}`);
+                            addLog(`結果: 輸! -${bet}. 餘額: ${bal.toFixed(0)}`);
 
                             if (cfg.name === 'martingale') bet *= 2;
                             else if (cfg.name === 'paroli') {
@@ -316,15 +348,16 @@ export const runSimulation = async (cfg: StrategyConfig): Promise<SimStats> => {
                                 if (custom.mode === 'WIN_CHASE') {
                                     sessionActive = false;
                                     waitForBreak = true; 
-                                    bet = cfg.baseBet;
-                                    addLog(`[策略] 追勝模式: 輸了(斷龍). 停止下注, 進入等待斷路.`);
+                                    winChaseTierIndex = 0;
+                                    bet = custom.tierBets ? custom.tierBets[0] : cfg.baseBet;
+                                    addLog(`[策略] 追勝輸了(斷龍). 停止並等待斷路.`);
                                 } else if (custom.mode === 'LOSS_CHASE') {
                                     bet *= getMartingaleMultiplier(target);
-                                    addLog(`[策略] 負追模式: 輸了. 下注倍投 -> ${bet}.`);
-                                } else { // ONCE
+                                    addLog(`[策略] 負追輸了. 倍投 -> ${bet}.`);
+                                } else { 
                                     sessionActive = false;
                                     waitForBreak = true;
-                                    addLog(`[策略] 單次模式: 結束. 進入等待斷路.`);
+                                    addLog(`[策略] 單次結束. 等待斷路.`);
                                 }
                             }
                         }
